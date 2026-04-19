@@ -1,0 +1,164 @@
+name: ⚡ Performance Monitoring
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    - cron: '0 4 * * *'
+
+env:
+  GRADLE_VERSION: '8.2'
+  JAVA_VERSION: '17'
+
+jobs:
+  # ==================== BUILD TIME ANALYSIS ====================
+  build-time-analysis:
+    name: ⏱️ Build Time Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: 📝 Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: ⏱️ Analyze build time
+        run: |
+          ./gradlew clean build --profile --no-daemon 2>&1 | tee build.log
+          echo "## Build Time Report" >> $GITHUB_STEP_SUMMARY
+          grep -E "Task|time" build.log >> $GITHUB_STEP_SUMMARY || true
+
+      - name: 📤 Upload build scan
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: build-scan
+          path: |
+            build/reports/profile/
+            build.log
+
+  # ==================== APK SIZE ANALYSIS ====================
+  apk-size-analysis:
+    name: 📦 APK Size Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: 📝 Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: 🏗️ Build APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: 📦 Analyze APK size
+        run: |
+          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          SIZE=$(du -sh "$APK_PATH" | cut -f1)
+          echo "## APK Size: $SIZE" >> $GITHUB_STEP_SUMMARY
+
+      - name: 📊 Generate size report
+        run: ./gradlew bundleDebug --no-daemon
+
+      - name: 📤 Upload APK analysis
+        uses: actions/upload-artifact@v3
+        with:
+          name: apk-analysis
+          path: app/build/outputs/
+
+  # ==================== MEMORY PROFILING ====================
+  memory-profiling:
+    name: 🧠 Memory Profiling
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: 🤖 Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: 📝 Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: 🧠 Run memory tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          script: |
+            ./gradlew installDebug
+            adb shell dumpsys meminfo > meminfo.txt
+            cat meminfo.txt
+
+      - name: 📤 Upload memory report
+        uses: actions/upload-artifact@v3
+        with:
+          name: memory-report
+          path: meminfo.txt
+
+  # ==================== STARTUP TIME ANALYSIS ====================
+  startup-time-analysis:
+    name: 🚀 Startup Time Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: 🤖 Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: 📝 Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: 🚀 Test startup performance
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          script: |
+            ./gradlew installDebug
+            adb shell am start -W -n com.yourapp/.MainActivity | tee startup.log
+
+      - name: 📤 Upload startup metrics
+        uses: actions/upload-artifact@v3
+        with:
+          name: startup-metrics
+          path: startup.log
