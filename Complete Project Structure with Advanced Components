@@ -1,0 +1,50 @@
+android-dev-roadmap/
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml
+│   │   ├── cd.yml
+│   │   ├── testing.yml
+│   │   ├── code-quality.yml
+│   │   ├── security-scan.yml
+│   │   ├── performance-monitoring.yml
+│   │   └── release.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.md
+│   │   ├── feature_request.md
+│   │   └── performance_issue.md
+│   └── pull_request_template.md
+├── app/
+│   ├── src/
+│   │   ├── main/
+│   │   ├── test/
+│   │   ├── androidTest/
+│   │   └── testFixtures/
+│   └── build.gradle.kts
+├── buildSrc/
+│   ├── src/main/kotlin/
+│   │   └── Dependencies.kt
+│   └── build.gradle.kts
+├── core/
+│   ├── analytics/
+│   ├── common/
+│   ├── database/
+│   └── network/
+├── feature/
+│   ├── premium/
+│   ├── roadmap/
+│   ├── projects/
+│   └── auth/
+├── scripts/
+│   ├── analyze.sh
+│   ├── deploy.sh
+│   ├── test-coverage.sh
+│   └── version-bump.sh
+├── config/
+│   ├── lint.xml
+│   ├── detekt.yml
+│   └── sonarqube.properties
+└── docs/
+    ├── CI_CD_GUIDE.md
+    ├── ARCHITECTURE.md
+    └── DEPLOYMENT.md
+
