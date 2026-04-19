@@ -1,0 +1,319 @@
+name: 🚀 Continuous Deployment
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GRADLE_VERSION: '8.2'
+  JAVA_VERSION: '17'
+  ANDROID_SDK_VERSION: '34'
+
+jobs:
+  # ==================== PREPARE RELEASE ====================
+  prepare-release:
+    name: 📦 Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      changelog: ${{ steps.changelog.outputs.value }}
+      is-release: ${{ steps.check-tag.outputs.is-release }}
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🏷️ Check if release tag
+        id: check-tag
+        run: |
+          if [[ "${{ github.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "is-release=true" >> $GITHUB_OUTPUT
+          else
+            echo "is-release=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📝 Get version
+        id: version
+        run: |
+          VERSION=$(grep "versionName" app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
+          echo "value=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: 📋 Generate changelog
+        id: changelog
+        run: |
+          CHANGELOG=$(git log --oneline $(git describe --tags --abbrev=0)..HEAD | head -20)
+          echo "value<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  # ==================== BUILD RELEASE APK ====================
+  build-release-apk:
+    name: 🏗️ Build Release APK
+    runs-on: ubuntu-latest
+    needs: prepare-release
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: 🔑 Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/keystore.jks
+          echo "keystore_password=${{ secrets.KEYSTORE_PASSWORD }}" >> local.properties
+          echo "key_alias=${{ secrets.KEY_ALIAS }}" >> local.properties
+          echo "key_password=${{ secrets.KEY_PASSWORD }}" >> local.properties
+
+      - name: 📝 Create local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" >> local.properties
+          echo "org.gradle.jvmargs=-Xmx4096m" >> gradle.properties
+
+      - name: 🏗️ Build Release APK
+        run: ./gradlew assembleRelease \
+          -Pandroid.useAndroidX=true \
+          -Pandroid.enableJetifier=true \
+          --no-daemon \
+          --parallel
+
+      - name: 🏗️ Build Release Bundle
+        run: ./gradlew bundleRelease \
+          -Pandroid.useAndroidX=true \
+          -Pandroid.enableJetifier=true \
+          --no-daemon
+
+      - name: 📤 Upload APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-apk
+          path: app/build/outputs/apk/release/
+
+      - name: 📤 Upload Bundle
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-bundle
+          path: app/build/outputs/bundle/release/
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          rm -f app/keystore.jks
+          rm -f local.properties
+
+  # ==================== BUILD RELEASE AAB ====================
+  build-release-aab:
+    name: 🏗️ Build AAB for Play Store
+    runs-on: ubuntu-latest
+    needs: prepare-release
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+
+      - name: ☕ Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: 🔑 Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/keystore.jks
+          echo "keystore_password=${{ secrets.KEYSTORE_PASSWORD }}" >> local.properties
+          echo "key_alias=${{ secrets.KEY_ALIAS }}" >> local.properties
+          echo "key_password=${{ secrets.KEY_PASSWORD }}" >> local.properties
+
+      - name: 📝 Create local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" >> local.properties
+          echo "org.gradle.jvmargs=-Xmx4096m" >> gradle.properties
+
+      - name: 🏗️ Build AAB
+        run: ./gradlew bundleRelease \
+          --no-daemon \
+          --parallel
+
+      - name: 📤 Upload AAB
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-aab
+          path: app/build/outputs/bundle/release/app-release.aab
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          rm -f app/keystore.jks
+          rm -f local.properties
+
+  # ==================== DEPLOY TO PLAY STORE ====================
+  deploy-play-store:
+    name: 🎮 Deploy to Play Store
+    runs-on: ubuntu-latest
+    needs: [ build-release-aab, prepare-release ]
+    if: needs.prepare-release.outputs.is-release == 'true'
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download AAB
+        uses: actions/download-artifact@v3
+        with:
+          name: release-aab
+          path: app/build/outputs/bundle/release/
+
+      - name: 🔑 Setup Play Store credentials
+        run: |
+          echo "${{ secrets.PLAY_STORE_JSON_KEY }}" > play-store-key.json
+
+      - name: 🚀 Upload to Play Store Internal Testing
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJson: play-store-key.json
+          packageName: com.yourapp
+          releaseFiles: 'app/build/outputs/bundle/release/app-release.aab'
+          track: internal
+          status: draft
+          inAppUpdatePriority: 5
+
+      - name: 📝 Create deployment comment
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🎮 **Play Store Deployment**\n\n✅ AAB uploaded to Internal Testing\n\nVersion: ${{ needs.prepare-release.outputs.version }}`
+            })
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: rm -f play-store-key.json
+
+  # ==================== DEPLOY TO FIREBASE ====================
+  deploy-firebase:
+    name: 🔥 Deploy to Firebase App Distribution
+    runs-on: ubuntu-latest
+    needs: [ build-release-apk, prepare-release ]
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download APK
+        uses: actions/download-artifact@v3
+        with:
+          name: release-apk
+          path: app/build/outputs/apk/release/
+
+      - name: 🔥 Upload to Firebase App Distribution
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          appId: ${{ secrets.FIREBASE_APP_ID }}
+          file: app/build/outputs/apk/release/app-release.apk
+          releaseNotes: ${{ needs.prepare-release.outputs.changelog }}
+          testers: ${{ secrets.FIREBASE_TESTERS }}
+
+  # ==================== CREATE RELEASE ====================
+  create-release:
+    name: 📋 Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [ prepare-release, deploy-firebase ]
+    if: needs.prepare-release.outputs.is-release == 'true'
+
+    steps:
+      - name: ✅ Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download artifacts
+        uses: actions/download-artifact@v3
+
+      - name: 📋 Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            # 🚀 Release v${{ needs.prepare-release.outputs.version }}
+            
+            ## 📝 Changelog
+            ${{ needs.prepare-release.outputs.changelog }}
+            
+            ## 📦 Downloads
+            - [APK](release-apk/app-release.apk)
+            - [Bundle](release-bundle/app-release.aab)
+            
+            ## 🎮 Installation
+            Download the APK or through Google Play Store
+          files: |
+            release-apk/app-release.apk
+            release-bundle/app-release.aab
+
+  # ==================== DEPLOYMENT NOTIFICATION ====================
+  notify-deployment:
+    name: 🔔 Send Deployment Notifications
+    runs-on: ubuntu-latest
+    needs: [ deploy-play-store, deploy-firebase, prepare-release ]
+    if: always()
+
+    steps:
+      - name: 📧 Send Slack notification
+        uses: slackapi/slack-github-action@v1
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "🚀 Android App Deployment",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Version:* ${{ needs.prepare-release.outputs.version }}\n*Status:* ✅ Success"
+                  }
+                }
+              ]
+            }
+
+      - name: 📧 Send Email notification
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "🚀 App Release v${{ needs.prepare-release.outputs.version }}"
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: "CI/CD Pipeline"
+          body: |
+            App version ${{ needs.prepare-release.outputs.version }} has been deployed successfully!
+            
+            Changelog:
+            ${{ needs.prepare-release.outputs.changelog }}
+            
